@@ -1,33 +1,79 @@
-#configure.sh VNC_USER_PASSWORD VNC_PASSWORD NGROK_AUTH_TOKEN
+#!/bin/bash
 
-#disable spotlight indexing
-sudo mdutil -i off -a
+set -e
 
-#Create new account
-sudo dscl . -create /Users/vncuser
-sudo dscl . -create /Users/vncuser UserShell /bin/bash
-sudo dscl . -create /Users/vncuser RealName "VNC User"
-sudo dscl . -create /Users/vncuser UniqueID 1001
-sudo dscl . -create /Users/vncuser PrimaryGroupID 80
-sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
-sudo dscl . -passwd /Users/vncuser $1
-sudo dscl . -passwd /Users/vncuser $1
-sudo createhomedir -c -u vncuser > /dev/null
+NGROK_AUTH_TOKEN="$3"
 
-#Enable VNC
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -allUsers -privs -all
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -clientopts -setvnclegacy -vnclegacy yes 
+echo "=== SYSTEM ==="
+sw_vers
+uname -m
+whoami
+id
 
-#VNC password - http://hints.macworld.com/article.php?story=20071103011608872
-echo $2 | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA"}; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt
+echo "=== GUI SESSION ==="
+console_user=$(stat -f '%Su' /dev/console)
+echo "Console user: $console_user"
 
-#Start VNC/reset changes
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent -console
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate
+echo "=== DISPLAY ==="
+launchctl print "gui/$(id -u)" >/dev/null
+echo "Aqua session detected"
 
-#install ngrok
-brew cask install ngrok
+echo "=== SCREEN CAPTURE TEST ==="
+mkdir -p "$RUNNER_TEMP/capture"
+screencapture -x "$RUNNER_TEMP/capture/test.png"
+ls -lh "$RUNNER_TEMP/capture/test.png"
 
-#configure ngrok and start it
-ngrok authtoken $3
-ngrok tcp 5900 &
+echo "=== REMOTE MANAGEMENT ==="
+
+KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+
+if [ -x "$KICKSTART" ]; then
+    echo "kickstart found"
+
+    sudo "$KICKSTART" \
+        -configure \
+        -allowAccessFor \
+        -allUsers \
+        -privs \
+        -all
+
+    sudo "$KICKSTART" \
+        -activate
+
+    sudo "$KICKSTART" \
+        -restart \
+        -agent \
+        -console
+
+else
+    echo "ERROR: kickstart not found"
+    exit 1
+fi
+
+echo "=== SCREEN SHARING PROCESS ==="
+pgrep -fl screensharing || true
+pgrep -fl ARDAgent || true
+
+echo "=== VNC PORT ==="
+sleep 3
+nc -zv 127.0.0.1 5900
+
+echo "=== INSTALL NGROK ==="
+
+if ! command -v ngrok >/dev/null 2>&1; then
+    brew install ngrok
+fi
+
+echo "=== CONFIGURE NGROK ==="
+ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
+
+echo "=== START NGROK ==="
+nohup ngrok tcp 5900 >"$RUNNER_TEMP/ngrok.log" 2>&1 &
+
+sleep 5
+
+echo "=== NGROK STATUS ==="
+cat "$RUNNER_TEMP/ngrok.log" || true
+
+echo "=== NGROK API ==="
+curl --silent http://127.0.0.1:4040/api/tunnels | jq '.tunnels'
