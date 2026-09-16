@@ -12,18 +12,22 @@ jobs:
     runs-on: macos-26
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup macOS VNC
+      - name: Configure macOS VNC
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
           VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
-          source configure.sh "$VNC_USER_PASSWORD" "$VNC_PASSWORD" "$NGROK_AUTH_TOKEN"
+          chmod +x configure.sh
+          ./configure.sh \
+            "$VNC_USER_PASSWORD" \
+            "$VNC_PASSWORD" \
+            "$NGROK_AUTH_TOKEN"
 
-      - name: Check ngrok tunnel
+      - name: Show VNC tunnel
         run: |
-          sleep 5
+          echo "=== NGROK TUNNELS ==="
           curl --silent http://127.0.0.1:4040/api/tunnels | jq '.tunnels'
