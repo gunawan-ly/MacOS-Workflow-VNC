@@ -2,78 +2,132 @@
 
 set -e
 
-NGROK_AUTH_TOKEN="$3"
+VNC_USER_PASSWORD="$1"
+VNC_PASSWORD="$2"
 
+echo "========================================"
+echo " macOS VNC CONFIGURATION"
+echo "========================================"
+
+echo
 echo "=== SYSTEM ==="
 sw_vers
 uname -m
 whoami
-id
 
+echo
+echo "=== CONSOLE USER ==="
+CONSOLE_USER=$(stat -f "%Su" /dev/console)
+echo "Console user: $CONSOLE_USER"
+
+echo
 echo "=== GUI SESSION ==="
-console_user=$(stat -f '%Su' /dev/console)
-echo "Console user: $console_user"
+pgrep -fl WindowServer || true
+pgrep -fl loginwindow || true
 
-echo "=== DISPLAY ==="
-launchctl print "gui/$(id -u)" >/dev/null
-echo "Aqua session detected"
+echo
+echo "=== SCREEN TEST ==="
+SCREENSHOT="/tmp/vnc-test.png"
 
-echo "=== SCREEN CAPTURE TEST ==="
-mkdir -p "$RUNNER_TEMP/capture"
-screencapture -x "$RUNNER_TEMP/capture/test.png"
-ls -lh "$RUNNER_TEMP/capture/test.png"
+if screencapture -x "$SCREENSHOT"; then
+    echo "Screen capture: OK"
+    ls -lh "$SCREENSHOT"
+else
+    echo "Screen capture: FAILED"
+fi
 
-echo "=== REMOTE MANAGEMENT ==="
+echo
+echo "=== ENABLE SCREEN SHARING / REMOTE MANAGEMENT ==="
 
 KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
 
-if [ -x "$KICKSTART" ]; then
-    echo "kickstart found"
-
-    sudo "$KICKSTART" \
-        -configure \
-        -allowAccessFor \
-        -allUsers \
-        -privs \
-        -all
-
-    sudo "$KICKSTART" \
-        -activate
-
-    sudo "$KICKSTART" \
-        -restart \
-        -agent \
-        -console
-
-else
+if [ ! -x "$KICKSTART" ]; then
     echo "ERROR: kickstart not found"
     exit 1
 fi
 
-echo "=== SCREEN SHARING PROCESS ==="
+sudo "$KICKSTART" \
+    -configure \
+    -allowAccessFor \
+    -allUsers \
+    -privs \
+    -all
+
+echo
+echo "=== ENABLE LEGACY VNC ==="
+
+sudo "$KICKSTART" \
+    -configure \
+    -clientopts \
+    -setvnclegacy \
+    -vnclegacy yes
+
+echo
+echo "=== SET VNC PASSWORD ==="
+
+if [ -n "$VNC_PASSWORD" ]; then
+    echo "$VNC_PASSWORD" |
+    perl -we '
+        BEGIN {
+            @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA";
+        }
+
+        $_ = <>;
+        chomp;
+
+        s/^(.{8}).*/$1/;
+
+        @p = unpack "C*", $_;
+
+        foreach (@k) {
+            printf "%02X", $_ ^ (shift @p || 0);
+        }
+
+        print "\n";
+    ' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
+
+    sudo chmod 600 /Library/Preferences/com.apple.VNCSettings.txt
+
+    echo "VNC password configured."
+else
+    echo "No VNC password supplied."
+fi
+
+echo
+echo "=== RESTART REMOTE MANAGEMENT ==="
+
+sudo "$KICKSTART" \
+    -restart \
+    -agent \
+    -console
+
+sudo "$KICKSTART" \
+    -activate
+
+echo
+echo "=== SCREEN SHARING PROCESSES ==="
+
 pgrep -fl screensharing || true
 pgrep -fl ARDAgent || true
 
-echo "=== VNC PORT ==="
+echo
+echo "=== WAIT FOR VNC SERVER ==="
+
 sleep 3
-nc -zv 127.0.0.1 5900
 
-echo "=== INSTALL NGROK ==="
+echo
+echo "=== CHECK VNC PORT ==="
 
-if ! command -v ngrok >/dev/null 2>&1; then
-    brew install ngrok
+if nc -zv 127.0.0.1 5900; then
+    echo
+    echo "========================================"
+    echo " VNC SERVER IS READY"
+    echo " Port: 5900"
+    echo "========================================"
+else
+    echo
+    echo "========================================"
+    echo " ERROR: VNC SERVER NOT LISTENING"
+    echo "========================================"
+    exit 1
 fi
-
-echo "=== CONFIGURE NGROK ==="
-ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
-
-echo "=== START NGROK ==="
-nohup ngrok tcp 5900 >"$RUNNER_TEMP/ngrok.log" 2>&1 &
-
-sleep 5
-
-echo "=== NGROK STATUS ==="
-cat "$RUNNER_TEMP/ngrok.log" || true
-
-echo "=== NGROK API ==="
-curl --silent http://127.0.0.1:4040/api/tunnels | jq '.tunnels'
